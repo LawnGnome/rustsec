@@ -83,6 +83,12 @@ pub fn notice_cmd_runner() -> CmdRunner {
     new_cmd_runner("notice")
 }
 
+/// Get a `CmdRunner` to a project with vulnerable dependencies that have
+/// unaffected newer versions available to upgrade to.
+pub fn unaffected_newer_cmd_runner() -> CmdRunner {
+    new_cmd_runner("unaffected-newer")
+}
+
 /// Get the advisory JSON output from a `CmdRunner`
 pub fn get_advisories_json(process: &mut Process) -> serde_json::Value {
     let mut output = String::new();
@@ -306,6 +312,23 @@ fn notice_advisories_found_json() {
         .unwrap();
 
     assert_eq!(advisory_id, "RUSTSEC-2022-0058");
+}
+
+#[test]
+fn unaffected_newer_suggests_upgrades() {
+    let runner = unaffected_newer_cmd_runner();
+    let mut process = runner.run();
+
+    let mut stdout = String::new();
+    let mut line = String::new();
+    while process.stdout().read_line(&mut line).unwrap() > 0 {
+        stdout.push_str(&line);
+        line.clear();
+    }
+    process.wait().unwrap().expect_code(1);
+
+    let upgrade_mentions = stdout.matches("Upgrade to").count();
+    assert_eq!(upgrade_mentions, 2, "stdout was:\n{stdout}");
 }
 
 // Causes tests to time out when run from tests, but works when invoked normally
