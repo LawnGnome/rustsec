@@ -9,7 +9,7 @@
 
 use abscissa_core::testing::prelude::*;
 use once_cell::sync::Lazy;
-use std::{io::BufRead, path::PathBuf};
+use std::{collections::HashSet, io::BufRead, path::PathBuf};
 use tempfile::TempDir;
 
 /// Directory containing the advisory database.
@@ -316,19 +316,70 @@ fn notice_advisories_found_json() {
 
 #[test]
 fn unaffected_newer_suggests_upgrades() {
+    let mut runner = unaffected_newer_cmd_runner();
+    runner.arg("--json");
+
+    let mut process = runner.run();
+    let json = get_advisories_json(&mut process);
+    process.wait().unwrap().expect_code(1);
+
+    // There should be (at least) two advisories:
+    //
+    // 1. RUSTSEC-2026-0118, which will suggest an unaffected version >=
+    //    0.26.0-beta.1, and
+    // 2. RUSTSEC-2026-0119, which will suggest a patched
+    //    version >= 0.26.1.
+    //
+    // We're going to verify that these are in the JSON output before we re-run
+    // the audit to validate the presenter output. If they aren't, then this
+    // test may need to be regenerated against the current advisory database.
+    let vulns = json
+        .pointer("/vulnerabilities/list")
+        .unwrap()
+        .as_array()
+        .unwrap();
+
+    let mut ids = HashSet::new();
+    for vuln in vulns {
+        let id = vuln.pointer("/advisory/id").unwrap().as_str().unwrap();
+        ids.insert(id);
+    }
+
+    assert!(ids.contains("RUSTSEC-2026-0118"));
+    assert!(ids.contains("RUSTSEC-2026-0119"));
+
+    // OK, now let's re-run without the --json flag and verify that the
+    // presenter rendered the suggested solutions as expected.
     let runner = unaffected_newer_cmd_runner();
     let mut process = runner.run();
 
-    let mut stdout = String::new();
+    // We'll just grab the Solution: lines, since that's all we're interested
+    // in.
+    let mut lines = Vec::new();
     let mut line = String::new();
     while process.stdout().read_line(&mut line).unwrap() > 0 {
-        stdout.push_str(&line);
+        if line.starts_with("Solution:") {
+            lines.push(line.clone());
+        }
         line.clear();
     }
     process.wait().unwrap().expect_code(1);
 
-    let upgrade_mentions = stdout.matches("Upgrade to").count();
-    assert_eq!(upgrade_mentions, 2, "stdout was:\n{stdout}");
+    // These expectations are based on the same advisories as listed above. Note
+    // that we're interested both in whether the solutions exist, and that they
+    // are correctly annotated as being based on the version being unaffected or
+    // patched, respectively.
+    for expected in [
+        "Upgrade to >=0.26.0-beta.1 (unaffected)",
+        "Upgrade to >=0.26.1 (patched)",
+    ]
+    .into_iter()
+    {
+        assert!(
+            lines.iter().any(|line| line.contains(expected)),
+            "looking for: {expected}"
+        );
+    }
 }
 
 // Causes tests to time out when run from tests, but works when invoked normally
